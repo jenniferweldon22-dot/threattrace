@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ThreatTrace Dashboard</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #111;
+        }
+
+        .card {
+            background: white;
+            padding: 15px;
+            margin: 10px 0;
+            border-radius: 10px;
+            border-left: 8px solid;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+        }
+
+        .LOW {
+            border-color: green;
+        }
+
+        .HIGH {
+            border-color: orange;
+        }
+
+        .CRITICAL {
+            border-color: red;
+        }
+
+        .MEDIUM {
+            border-color: #ff9800;
+        }
+
+        .ip {
+            font-weight: bold;
+            font-size: 18px;
+        }
+
+        .label {
+            font-weight: bold;
+        }
+
+        .message {
+            margin-top: 8px;
+            color: #444;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 5px;
+            color: white;
+            font-size: 12px;
+        }
+
+        .LOW .badge {
+            background: green;
+        }
+
+        .MEDIUM .badge {
+            background: #ff9800;
+        }
+
+        .HIGH .badge {
+            background: orange;
+        }
+
+        .CRITICAL .badge {
+            background: red;
+        }
+
+        .score {
+            font-weight: bold;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>🚨 ThreatTrace Security Dashboard</h1>
+
+    {% if summary %}
+        <div class="card">
+            <h2>📊 Security Summary</h2>
+            <p><b>Total Failed Logins:</b> {{ summary.total_failed }}</p>
+            <p><b>Most Active IP:</b> {{ summary.most_dangerous_ip }}</p>
+            <p><b>Max Attempts (Single IP):</b> {{ summary.max_attempts }}</p>
+        </div>
+    {% endif %}
+
+    {% if alerts|length == 0 %}
+        <p style="color:green;">No threats detected ✅</p>
+    {% else %}
+
+        {% for alert in alerts %}
+            <div class="card {{ alert.risk }}">
+
+                <span class="badge">{{ alert.risk }}</span>
+
+                <p class="ip">IP: {{ alert.ip }}</p>
+
+                <p>
+                    <span class="label">Failed Attempts:</span>
+                    {{ alert.count }}
+                </p>
+
+                <p class="score">
+                    Risk Score: {{ alert.score }}/100
+                </p>
+
+                <p class="message">
+                    {{ alert.message }}
+                </p>
+
+            </div>
+        {% endfor %}
+
+    {% endif %}
+
+    <br>
+    <a href="/">⬅ Back to Upload</a>
+
+</body>
+</html>
