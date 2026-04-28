@@ -7,14 +7,22 @@ import json
 from functools import wraps
 
 from parser.log_parser import parse_logs
-from database import init_db, save_alert, authenticate_user, get_leaderboard, get_analytics_summary
+from database import (
+    init_db,
+    save_alert,
+    authenticate_user,
+    get_leaderboard,
+    get_analytics_summary,
+    create_user,
+    create_org
+)
 
 app = Flask(__name__)
 
 # =========================
-# 🔐 CONFIG (STABLE FIX)
+# CONFIG (PRODUCTION SAFE)
 # =========================
-app.secret_key = "change-this-to-a-strong-random-secret"
+app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-change-me")
 
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
@@ -25,7 +33,7 @@ init_db()
 
 
 # =========================
-# 🔐 AUTH DECORATOR
+# AUTH DECORATOR
 # =========================
 def login_required(f):
     @wraps(f)
@@ -37,12 +45,13 @@ def login_required(f):
 
 
 # =========================
-# 🌍 GEOLOCATION
+# GEO LOOKUP
 # =========================
 def get_geo(ip):
     try:
         r = requests.get(f"http://ip-api.com/json/{ip}", timeout=2)
         d = r.json()
+
         return {
             "country": d.get("country", "Unknown"),
             "city": d.get("city", "Unknown"),
@@ -54,14 +63,44 @@ def get_geo(ip):
 
 
 # =========================
-# 🧠 RISK ENGINE
+# RISK ENGINE
 # =========================
 def calculate_risk(attempts):
     return max(0, min(100, attempts * 12 + random.randint(-5, 5)))
 
 
 # =========================
-# 🔑 LOGIN
+# 🏠 LANDING PAGE (FIXED)
+# =========================
+@app.route("/")
+def home():
+    return render_template("landing.html")
+
+
+# =========================
+# SIGNUP (NEW)
+# =========================
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    if request.method == "POST":
+
+        username = request.form.get("username")
+        password = request.form.get("password")
+        org_name = request.form.get("org_name") or f"{username}'s Org"
+
+        # create org
+        org_id = create_org(org_name)
+
+        # create user
+        create_user(username, password, role="admin", org_id=org_id)
+
+        return redirect(url_for("login"))
+
+    return render_template("signup.html")
+
+
+# =========================
+# LOGIN
 # =========================
 @app.route("/login", methods=["GET", "POST"])
 def login():
@@ -74,9 +113,12 @@ def login():
 
         if user:
             session["user"] = {
+                "id": user["id"],
                 "username": user["username"],
-                "role": user["role"]
+                "role": user["role"],
+                "org_id": user.get("org_id", 1)
             }
+
             return redirect(url_for("dashboard"))
 
         return render_template("login.html", error="Invalid credentials")
@@ -85,7 +127,7 @@ def login():
 
 
 # =========================
-# 🚪 LOGOUT
+# LOGOUT
 # =========================
 @app.route("/logout")
 def logout():
@@ -94,39 +136,38 @@ def logout():
 
 
 # =========================
-# 🏠 HOME
-# =========================
-@app.route("/")
-def home():
-    return redirect(url_for("dashboard"))
-
-
-# =========================
-# 📊 DASHBOARD
+# DASHBOARD
 # =========================
 @app.route("/dashboard")
 @login_required
 def dashboard():
+
+    user = session["user"]
+    org_id = user["org_id"]
+
     return render_template(
         "dashboard.html",
-        alerts=get_leaderboard(),
-        summary=get_analytics_summary()
+        alerts=get_leaderboard(org_id),
+        summary=get_analytics_summary(org_id),
+        user=user
     )
 
 
 # =========================
-# 📁 ANALYZE LOGS
+# ANALYZE LOGS
 # =========================
 @app.route("/analyze", methods=["POST"])
 @login_required
 def analyze():
+
+    user = session["user"]
+    org_id = user["org_id"]
 
     file = request.files.get("logfile")
     if not file:
         return "No file uploaded", 400
 
     os.makedirs("logs", exist_ok=True)
-
     path = os.path.join("logs", file.filename)
     file.save(path)
 
@@ -137,6 +178,7 @@ def analyze():
         geo = get_geo(ip)
 
         save_alert({
+            "org_id": org_id,
             "ip": ip,
             "city": geo["city"],
             "country": geo["country"],
@@ -150,17 +192,21 @@ def analyze():
 
 
 # =========================
-# 🌐 REAL-TIME SOC STREAM
+# LIVE SOC STREAM
 # =========================
 @app.route("/stream")
 @login_required
 def stream():
+
+    user = session["user"]
+    org_id = user["org_id"]
 
     def generate():
         while True:
             time.sleep(2)
 
             event = {
+                "org_id": org_id,
                 "ip": f"10.{random.randint(0,255)}.{random.randint(0,255)}.{random.randint(0,255)}",
                 "city": "Live SOC",
                 "country": "Stream",
@@ -178,16 +224,27 @@ def stream():
 
 
 # =========================
-# 📊 ANALYTICS API
+# ANALYTICS API
 # =========================
 @app.route("/api/analytics")
 @login_required
 def api_analytics():
-    return jsonify(get_analytics_summary())
+
+    user = session["user"]
+    return jsonify(get_analytics_summary(user["org_id"]))
 
 
 # =========================
-# 🚀 RUN SERVER (IMPORTANT FIX)
+# HEALTH CHECK (FOR RENDER)
+# =========================
+@app.route("/health")
+def health():
+    return {"status": "ok"}, 200
+
+
+# =========================
+# RUN SERVER
 # =========================
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

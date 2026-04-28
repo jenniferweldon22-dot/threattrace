@@ -5,7 +5,7 @@ DB_NAME = "threattrace.db"
 
 
 # =========================
-# CONNECTION
+# DB CONNECTION
 # =========================
 def get_db():
     conn = sqlite3.connect(DB_NAME)
@@ -14,11 +14,36 @@ def get_db():
 
 
 # =========================
-# INIT DATABASE (SOC STRUCTURE)
+# INIT DATABASE (SAAS READY)
 # =========================
 def init_db():
     conn = get_db()
     cursor = conn.cursor()
+
+    # =========================
+    # ORGANIZATIONS (SAAS CORE)
+    # =========================
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS orgs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # =========================
+    # USERS TABLE
+    # =========================
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id INTEGER,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        role TEXT DEFAULT 'analyst',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
 
     # =========================
     # ALERTS TABLE
@@ -26,6 +51,7 @@ def init_db():
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS alerts (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        org_id INTEGER,
         ip TEXT NOT NULL,
         city TEXT,
         country TEXT,
@@ -37,26 +63,30 @@ def init_db():
     )
     """)
 
-    # =========================
-    # USERS TABLE (SOC AUTH)
-    # =========================
+    conn.commit()
+    conn.close()
+
+
+# =========================
+# CREATE ORGANIZATION
+# =========================
+def create_org(name):
+    conn = get_db()
+    cursor = conn.cursor()
+
     cursor.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        role TEXT DEFAULT 'analyst'
-    )
-    """)
+        INSERT OR IGNORE INTO orgs (name)
+        VALUES (?)
+    """, (name,))
 
     conn.commit()
     conn.close()
 
 
 # =========================
-# CREATE USER (ADMIN TOOL)
+# CREATE USER (SAAS)
 # =========================
-def create_user(username, password, role="analyst"):
+def create_user(username, password, org_id=1, role="analyst"):
     conn = get_db()
     cursor = conn.cursor()
 
@@ -64,14 +94,13 @@ def create_user(username, password, role="analyst"):
 
     try:
         cursor.execute("""
-            INSERT INTO users (username, password, role)
-            VALUES (?, ?, ?)
-        """, (username, hashed, role))
+            INSERT INTO users (username, password, org_id, role)
+            VALUES (?, ?, ?, ?)
+        """, (username, hashed, org_id, role))
 
         conn.commit()
 
     except sqlite3.IntegrityError:
-        # user already exists
         pass
 
     finally:
@@ -79,15 +108,17 @@ def create_user(username, password, role="analyst"):
 
 
 # =========================
-# AUTH USER
+# AUTHENTICATION
 # =========================
 def authenticate_user(username, password):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT * FROM users WHERE username = ?", (username,))
-    user = cursor.fetchone()
+    cursor.execute("""
+        SELECT * FROM users WHERE username = ?
+    """, (username,))
 
+    user = cursor.fetchone()
     conn.close()
 
     if user and check_password_hash(user["password"], password):
@@ -97,16 +128,19 @@ def authenticate_user(username, password):
 
 
 # =========================
-# SAVE ALERT (SOC INGESTION)
+# SAVE ALERT (ORG-AWARE)
 # =========================
 def save_alert(alert):
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO alerts (ip, city, country, lat, lon, risk, count)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO alerts (
+            org_id, ip, city, country, lat, lon, risk, count
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (
+        alert.get("org_id", 1),
         alert.get("ip", "unknown"),
         alert.get("city", "Unknown"),
         alert.get("country", "Unknown"),
@@ -121,9 +155,9 @@ def save_alert(alert):
 
 
 # =========================
-# LEADERBOARD (SOC CORE FEATURE)
+# LEADERBOARD (PER ORG)
 # =========================
-def get_leaderboard(limit=10):
+def get_leaderboard(org_id, limit=10):
     conn = get_db()
     cursor = conn.cursor()
 
@@ -135,10 +169,11 @@ def get_leaderboard(limit=10):
             SUM(count) AS total_attempts,
             MAX(risk) AS max_risk
         FROM alerts
-        GROUP BY ip, city, country
+        WHERE org_id = ?
+        GROUP BY ip
         ORDER BY max_risk DESC, total_attempts DESC
         LIMIT ?
-    """, (limit,))
+    """, (org_id, limit))
 
     rows = cursor.fetchall()
     conn.close()
@@ -147,31 +182,41 @@ def get_leaderboard(limit=10):
 
 
 # =========================
-# SOC ANALYTICS SUMMARY
+# ANALYTICS (PER ORG)
 # =========================
-def get_analytics_summary():
+def get_analytics_summary(org_id):
     conn = get_db()
     cursor = conn.cursor()
 
-    cursor.execute("SELECT COUNT(*) AS total FROM alerts")
+    cursor.execute("""
+        SELECT COUNT(*) AS total
+        FROM alerts
+        WHERE org_id = ?
+    """, (org_id,))
     total = cursor.fetchone()["total"]
 
-    cursor.execute("SELECT COUNT(*) AS high FROM alerts WHERE risk >= 80")
+    cursor.execute("""
+        SELECT COUNT(*) AS high
+        FROM alerts
+        WHERE org_id = ? AND risk >= 80
+    """, (org_id,))
     high = cursor.fetchone()["high"]
 
     cursor.execute("""
         SELECT ip, MAX(risk) AS risk
         FROM alerts
+        WHERE org_id = ?
         GROUP BY ip
         ORDER BY risk DESC
         LIMIT 1
-    """)
-    top_ip = cursor.fetchone()
+    """, (org_id,))
+
+    top = cursor.fetchone()
 
     conn.close()
 
     return {
         "total_events": total,
         "high_risk": high,
-        "top_ip": top_ip["ip"] if top_ip else "N/A"
+        "top_ip": top["ip"] if top else "N/A"
     }
