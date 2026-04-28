@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+
+{% block content %}
+
+<h1 class="text-3xl font-bold mb-2">ThreatTrace SOC Console</h1>
+
+<p class="text-gray-400 mb-6">
+    Real-time threat intelligence • Streaming telemetry • Risk correlation engine
+</p>
+
+<!-- =========================
+     METRICS (DYNAMIC SAFE FALLBACKS)
+========================= -->
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-gray-400 text-sm">High Risk</p>
+        <h2 class="text-red-400 text-3xl font-bold" id="highRisk">0</h2>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-gray-400 text-sm">Medium Risk</p>
+        <h2 class="text-yellow-400 text-3xl font-bold" id="mediumRisk">0</h2>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-gray-400 text-sm">Low Risk</p>
+        <h2 class="text-green-400 text-3xl font-bold" id="lowRisk">0</h2>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-gray-400 text-sm">Live Events</p>
+        <h2 class="text-purple-400 text-3xl font-bold" id="eventCount">0</h2>
+    </div>
+
+</div>
+
+<!-- =========================
+     CHART + MAP
+========================= -->
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 class="text-lg font-semibold mb-4">Attack Timeline</h3>
+        <canvas id="attackChart"></canvas>
+    </div>
+
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-6">
+        <h3 class="text-lg font-semibold mb-4">Global Threat Map</h3>
+        <div id="map" class="w-full h-96 rounded-lg"></div>
+    </div>
+
+</div>
+
+<!-- =========================
+     LEADERBOARD
+========================= -->
+<div class="bg-gray-900 border border-gray-800 rounded-xl p-6 mt-6">
+
+    <h3 class="text-lg font-semibold mb-4">SOC Threat Leaderboard</h3>
+
+    <table class="w-full text-sm text-left text-gray-300">
+
+        <thead class="text-gray-400 border-b border-gray-800">
+            <tr>
+                <th class="py-2">Rank</th>
+                <th>IP</th>
+                <th>Risk</th>
+                <th>Attempts</th>
+                <th>Location</th>
+            </tr>
+        </thead>
+
+        <tbody id="leaderboardBody"></tbody>
+
+    </table>
+</div>
+
+<!-- =========================
+     ALERT TOAST SYSTEM
+========================= -->
+<div id="toastContainer" class="fixed top-5 right-5 space-y-3 z-50"></div>
+
+<!-- SAFE DATA -->
+<script>
+const INITIAL_ALERTS = {{ alerts | tojson | safe }};
+</script>
+
+<!-- =========================
+     CHART
+========================= -->
+<script>
+const ctx = document.getElementById('attackChart');
+
+const chartData = {
+    labels: [],
+    datasets: [{
+        label: 'Threat Events',
+        data: [],
+        borderColor: '#60A5FA',
+        backgroundColor: 'rgba(96,165,250,0.2)',
+        tension: 0.4
+    }]
+};
+
+const chart = new Chart(ctx, {
+    type: 'line',
+    data: chartData,
+    options: {
+        plugins: {
+            legend: { labels: { color: '#fff' } }
+        },
+        scales: {
+            x: { ticks: { color: '#aaa' } },
+            y: { ticks: { color: '#aaa' } }
+        }
+    }
+});
+</script>
+
+<!-- =========================
+     MAP + ENGINE
+========================= -->
+<script>
+
+const map = L.map('map').setView([20, 0], 2);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: ''
+}).addTo(map);
+
+let leaderboard = [];
+let eventCounter = 0;
+
+const leaderboardBody = document.getElementById("leaderboardBody");
+
+// =========================
+// SAFE MARKER
+// =========================
+function addMarker(a) {
+    if (!a || !a.lat || !a.lon) return;
+
+    const color =
+        a.risk >= 80 ? "red" :
+        a.risk >= 40 ? "orange" :
+        "green";
+
+    L.circleMarker([a.lat, a.lon], {
+        radius: 6,
+        color,
+        fillColor: color,
+        fillOpacity: 0.7
+    }).addTo(map)
+    .bindPopup(`
+        <b>Threat Event</b><br>
+        IP: ${a.ip}<br>
+        Risk: ${a.risk}<br>
+        City: ${a.city || "Unknown"}
+    `);
+}
+
+// =========================
+// LEADERBOARD
+// =========================
+function renderLeaderboard() {
+
+    const sorted = [...leaderboard]
+        .sort((a, b) => b.risk - a.risk)
+        .slice(0, 10);
+
+    leaderboardBody.innerHTML = sorted.map((item, i) => {
+
+        const color =
+            item.risk >= 80 ? "text-red-400" :
+            item.risk >= 40 ? "text-orange-400" :
+            "text-green-400";
+
+        return `
+        <tr>
+            <td class="py-2">${i + 1}</td>
+            <td>${item.ip}</td>
+            <td class="${color} font-semibold">${item.risk}</td>
+            <td>${item.count || 1}</td>
+            <td>${item.city || "Unknown"}</td>
+        </tr>`;
+    }).join("");
+}
+
+// =========================
+// TOAST ALERTS
+// =========================
+function showToast(data) {
+
+    const box = document.createElement("div");
+
+    box.className = "bg-gray-900 border border-red-500 px-4 py-3 rounded-lg shadow-lg";
+
+    box.innerHTML = `
+        🚨 <b>HIGH RISK ALERT</b><br>
+        IP: ${data.ip}<br>
+        Risk: ${data.risk}<br>
+        City: ${data.city || "Unknown"}
+    `;
+
+    document.getElementById("toastContainer").appendChild(box);
+
+    setTimeout(() => box.remove(), 5000);
+}
+
+// =========================
+// INIT DATA
+// =========================
+if (Array.isArray(INITIAL_ALERTS)) {
+    INITIAL_ALERTS.forEach(a => {
+        leaderboard.push(a);
+        addMarker(a);
+    });
+}
+
+renderLeaderboard();
+
+// =========================
+// UPDATE METRICS
+// =========================
+function updateMetrics(data) {
+
+    eventCounter++;
+
+    document.getElementById("eventCount").innerText = eventCounter;
+
+    const high = leaderboard.filter(x => x.risk >= 80).length;
+    const med = leaderboard.filter(x => x.risk >= 40 && x.risk < 80).length;
+    const low = leaderboard.filter(x => x.risk < 40).length;
+
+    document.getElementById("highRisk").innerText = high;
+    document.getElementById("mediumRisk").innerText = med;
+    document.getElementById("lowRisk").innerText = low;
+}
+</script>
+
+<!-- =========================
+     REAL-TIME STREAM (SOC MODE)
+========================= -->
+<script>
+
+const stream = new EventSource("/stream");
+
+stream.onmessage = function(event) {
+
+    const data = JSON.parse(event.data);
+
+    leaderboard.push(data);
+
+    if (leaderboard.length > 80) leaderboard.shift();
+
+    // update UI
+    addMarker(data);
+    renderLeaderboard();
+    updateMetrics(data);
+
+    // chart update
+    chart.data.labels.push(new Date().toLocaleTimeString());
+    chart.data.datasets[0].data.push(data.risk);
+
+    if (chart.data.labels.length > 10) {
+        chart.data.labels.shift();
+        chart.data.datasets[0].data.shift();
+    }
+
+    chart.update();
+
+    // SOC ALERT RULE
+    if (data.risk >= 80) {
+        showToast(data);
+    }
+};
+</script>
+
+{% endblock %}
